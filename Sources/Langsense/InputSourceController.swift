@@ -19,7 +19,23 @@ final class InputSourceController {
             let localizedName = property(source, key: kTISPropertyLocalizedName) ?? ""
             switch language {
             case .english:
-                return id == "com.apple.keylayout.US" || localizedName == "U.S."
+                // Match common English-producing keyboard layouts. "ABC" is the
+                // macOS default for US users. "U.S." is the legacy US layout.
+                // Also accept USExtended, British, Australian, etc. via the
+                // English-language marker in the localized name.
+                let englishIDs: Set<String> = [
+                    "com.apple.keylayout.ABC",
+                    "com.apple.keylayout.US",
+                    "com.apple.keylayout.USExtended",
+                    "com.apple.keylayout.British",
+                    "com.apple.keylayout.British-PC",
+                    "com.apple.keylayout.Australian",
+                    "com.apple.keylayout.Canadian",
+                    "com.apple.keylayout.Irish"
+                ]
+                if englishIDs.contains(id) { return true }
+                let haystack = "\(id) \(localizedName)".lowercased()
+                return haystack.contains("english") || localizedName == "ABC" || localizedName == "U.S."
             case .korean:
                 let haystack = "\(id) \(localizedName)".lowercased()
                 return haystack.contains("korean") || haystack.contains("2-set") || haystack.contains("두벌")

@@ -50,3 +50,33 @@ struct TypingSnapshot: Equatable {
     let justReachedBoundary: Bool
     let boundarySuffix: String
 }
+
+enum RevertTrigger: String, CaseIterable, Identifiable {
+    case rightCommand
+    case delete
+    case disabled
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rightCommand:
+            return "Tap Right ⌘"
+        case .delete:
+            return "Press Delete"
+        case .disabled:
+            return "Off"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .rightCommand:
+            return "Press and release the right Command key alone within 1.5s of a correction to undo it."
+        case .delete:
+            return "Press Delete within 1.5s of a correction to undo it. May feel intrusive — the Delete key is normally used for editing."
+        case .disabled:
+            return "No revert hotkey. Undo via the app menu or your editor’s own Undo if available."
+        }
+    }
+}

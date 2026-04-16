@@ -12,11 +12,13 @@ struct ContentView: View {
             Divider()
             modeSection
             Divider()
+            revertSection
+            Divider()
             tokenSection
             Divider()
             actionSection
             Divider()
-            Text("Hotkey: Control + Option + Command + Return")
+            Text("Apply hotkey: Control + Option + Command + Return")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -64,6 +66,25 @@ struct ContentView: View {
             }
 
             Text(appState.correctionMode.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var revertSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Revert hotkey")
+                .font(.subheadline.weight(.semibold))
+
+            Picker("Revert hotkey", selection: $appState.revertTrigger) {
+                ForEach(RevertTrigger.allCases) { trigger in
+                    Text(trigger.title).tag(trigger)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.radioGroup)
+
+            Text(appState.revertTrigger.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

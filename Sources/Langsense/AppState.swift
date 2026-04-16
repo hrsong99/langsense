@@ -15,8 +15,14 @@ final class AppState: ObservableObject {
             UserDefaults.standard.set(correctionMode.rawValue, forKey: Self.correctionModeDefaultsKey)
         }
     }
+    @Published var revertTrigger: RevertTrigger = .rightCommand {
+        didSet {
+            UserDefaults.standard.set(revertTrigger.rawValue, forKey: Self.revertTriggerDefaultsKey)
+        }
+    }
 
     private static let correctionModeDefaultsKey = "CorrectionMode"
+    private static let revertTriggerDefaultsKey = "RevertTrigger"
     private static let correctedTokenCooldown: TimeInterval = 2.0
     private static let correctedTokenCacheLimit = 24
     private static let revertWindow: TimeInterval = 1.5
@@ -48,16 +54,30 @@ final class AppState: ObservableObject {
             self.correctionMode = .manual
         }
 
+        if let storedTrigger = UserDefaults.standard.string(forKey: Self.revertTriggerDefaultsKey),
+           let trigger = RevertTrigger(rawValue: storedTrigger) {
+            self.revertTrigger = trigger
+        } else {
+            self.revertTrigger = .rightCommand
+        }
+
         refreshPermissions(prompt: true)
         setupBindings()
         typingMonitor.shouldInterceptDelete = { [weak self] in
             guard let self else { return false }
-            return self.isRevertPending()
+            return self.revertTrigger == .delete && self.isRevertPending()
         }
         typingMonitor.onInterceptedDelete = { [weak self] in
             // Hop to main to do the AX work — tap callback runs on main already,
             // but this keeps the semantics explicit.
             Task { @MainActor in self?.revertLastCorrection() }
+        }
+        typingMonitor.onRightCommandTap = { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.revertTrigger == .rightCommand, self.isRevertPending() else { return }
+                self.revertLastCorrection()
+            }
         }
         typingMonitor.start()
         registerHotKey()
@@ -113,12 +133,17 @@ final class AppState: ObservableObject {
     }
 
     private func handleBoundary(snapshot: TypingSnapshot) {
+        let currentInputSource = inputSourceController.currentInputSourceID() ?? "(nil)"
+        NSLog("[Langsense] boundary seen token=%@ tokenLen=%d suffix=%@ inputSource=%@ mode=%@",
+              snapshot.token, snapshot.token.count, snapshot.boundarySuffix, currentInputSource, correctionMode.rawValue)
+
         guard correctionMode == .boundaryAutoFix,
               !shouldSuppressAutoCorrection(for: snapshot.token) else {
             return
         }
 
         guard let boundarySuggestion = ConversionEngine.suggest(for: snapshot.token, profile: .boundaryAutoFix) else {
+            NSLog("[Langsense] boundary no-suggestion token=%@", snapshot.token)
             return
         }
 

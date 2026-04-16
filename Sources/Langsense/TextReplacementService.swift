@@ -10,6 +10,12 @@ enum ReplacementOutcome {
 }
 
 final class TextReplacementService {
+    /// Marker written into `.eventSourceUserData` on every CGEvent we synthesize,
+    /// so our own event tap can recognize and ignore them. Without this, the
+    /// Delete keystrokes emitted during the paste fallback are re-entrant and
+    /// re-trigger the revert path mid-replacement.
+    static let syntheticEventMarker: Int64 = 0x4C414E_47_53_4E_53 // 'LANG_SNS'
+
     static func isSecureInputActive() -> Bool {
         IsSecureEventInputEnabled()
     }
@@ -136,10 +142,12 @@ final class TextReplacementService {
     private static func postKeystroke(keyCode: CGKeyCode, flags: CGEventFlags, source: CGEventSource) {
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         keyDown?.flags = flags
+        keyDown?.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         keyDown?.post(tap: .cghidEventTap)
 
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         keyUp?.flags = flags
+        keyUp?.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         keyUp?.post(tap: .cghidEventTap)
     }
 }

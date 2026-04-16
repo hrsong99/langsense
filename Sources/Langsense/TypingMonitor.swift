@@ -12,14 +12,23 @@ final class TypingMonitor: ObservableObject {
     var shouldInterceptDelete: (() -> Bool)?
     var onInterceptedDelete: (() -> Void)?
 
+    /// Fired when the user presses and releases the right ⌘ key alone
+    /// (no chord, no other modifier, released inside `rightCommandTapWindow`).
+    /// AppState decides whether to act on it based on the user's RevertTrigger setting.
+    var onRightCommandTap: (() -> Void)?
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var workspaceObserver: NSObjectProtocol?
     private let maxTokenLength = 32
     private let boundaryCharacters = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+    private let rightCommandTapWindow: TimeInterval = 0.5
 
     private var currentToken = ""
     private var ignoredEventsUntil = Date.distantPast
+    private var rightCommandDown = false
+    private var rightCommandDownAt = Date.distantPast
+    private var rightCommandChordUsed = false
 
     private static let navigationKeyCodes: Set<Int> = [
         kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow,
@@ -29,13 +38,13 @@ final class TypingMonitor: ObservableObject {
 
     func start() {
         guard eventTap == nil else { return }
-        let mask = CGEventMask(
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.otherMouseDown.rawValue) |
-            (1 << CGEventType.scrollWheel.rawValue)
-        )
+        let interestingTypes: [CGEventType] = [
+            .keyDown, .flagsChanged,
+            .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel
+        ]
+        let mask = interestingTypes.reduce(CGEventMask(0)) { acc, type in
+            acc | (CGEventMask(1) << CGEventMask(type.rawValue))
+        }
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let monitor = Unmanaged<TypingMonitor>.fromOpaque(userInfo).takeUnretainedValue()
@@ -48,16 +57,30 @@ final class TypingMonitor: ObservableObject {
                 return Unmanaged.passUnretained(event)
             }
 
+            // Ignore events we synthesized ourselves (paste-fallback Deletes/⌘V).
+            // Without this, our own Delete keystrokes re-enter the Delete intercept
+            // below and trigger a bogus revert mid-replacement.
+            if event.getIntegerValueField(.eventSourceUserData) == TextReplacementService.syntheticEventMarker {
+                return Unmanaged.passUnretained(event)
+            }
+
             switch type {
             case .keyDown:
                 let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+                // Any real keystroke while Right ⌘ is held turns the gesture into a chord.
+                if monitor.rightCommandDown {
+                    monitor.rightCommandChordUsed = true
+                }
                 if keyCode == kVK_Delete,
                    monitor.shouldInterceptDelete?() == true {
                     monitor.onInterceptedDelete?()
                     return nil
                 }
                 monitor.handle(event: event)
+            case .flagsChanged:
+                monitor.handleFlagsChanged(event: event)
             case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+                monitor.resetRightCommandState()
                 monitor.invalidateToken()
             default:
                 break
@@ -174,6 +197,45 @@ final class TypingMonitor: ObservableObject {
         }
     }
 
+    // Right ⌘ tap detection. Fires onRightCommandTap when the user presses
+    // and releases the right-Command key alone (no chord, no other modifier,
+    // release inside rightCommandTapWindow). AppState decides whether to act
+    // on it based on the user's RevertTrigger setting.
+    private func handleFlagsChanged(event: CGEvent) {
+        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let flags = event.flags
+
+        guard keyCode == kVK_RightCommand else {
+            // A different modifier changed state. If it happened while Right ⌘
+            // was held, the user is chording — disqualify the tap.
+            if rightCommandDown {
+                rightCommandChordUsed = true
+            }
+            return
+        }
+
+        let commandHeldNow = flags.contains(.maskCommand)
+        if commandHeldNow && !rightCommandDown {
+            // Any other modifier already pressed when Right ⌘ went down = chord.
+            let otherModifiers: CGEventFlags = [.maskShift, .maskAlternate, .maskControl, .maskSecondaryFn, .maskHelp]
+            rightCommandDown = true
+            rightCommandDownAt = Date()
+            rightCommandChordUsed = flags.intersection(otherModifiers).rawValue != 0
+        } else if !commandHeldNow && rightCommandDown {
+            let heldFor = Date().timeIntervalSince(rightCommandDownAt)
+            let wasTap = !rightCommandChordUsed && heldFor <= rightCommandTapWindow
+            resetRightCommandState()
+            if wasTap {
+                onRightCommandTap?()
+            }
+        }
+    }
+
+    private func resetRightCommandState() {
+        rightCommandDown = false
+        rightCommandChordUsed = false
+    }
+
     // All state mutation must happen on the main run loop.
     // The event tap is added via CFRunLoopAddSource(CFRunLoopGetMain()),
     // and the workspace observer's queue is .main.
@@ -187,6 +249,7 @@ final class TypingMonitor: ObservableObject {
     // Skips the ignoredEventsUntil window — used when we have external evidence
     // of focus change (e.g. app activation) that should override any in-flight replacement.
     private func forceInvalidateToken() {
+        resetRightCommandState()
         guard !currentToken.isEmpty else { return }
         currentToken = ""
         publishSnapshot(justReachedBoundary: false, boundarySuffix: "")
