@@ -1,4 +1,4 @@
-# WrongLanguageHelper
+# Langsense
 
 A small macOS menu bar prototype for fixing text that was typed with the wrong keyboard language active:
 
@@ -30,10 +30,12 @@ If you want the safest behavior for public use, stay in **Manual** mode.
 - Conversion between:
   - QWERTY letters -> Hangul syllables using the standard Korean 2-set keyboard mapping
   - Hangul syllables/jamo -> QWERTY letters
-- Global hotkey to apply the latest suggestion manually
+- Global hotkey (via `NSEvent` monitors) to apply the latest suggestion manually
 - User-selectable correction modes in the menu bar UI
 - Best-effort input source switching between U.S. English and Korean
-- Best-effort replacement of recent text by deleting previous characters and pasting the converted text
+- Text replacement that tries the Accessibility API first (atomic, no clipboard) and falls back to a safer async paste path with clipboard-change guard
+- Token buffer invalidation on mouse clicks, scroll, navigation keys, modifier chords, and app switches to avoid replacing text at the wrong cursor position
+- Secure-input detection (`IsSecureEventInputEnabled()`) that skips replacement in password fields and terminals with secure input active
 - Lightweight SwiftPM tests for conversion and stricter auto-mode gating
 
 ## Correction modes
@@ -86,21 +88,20 @@ This is best-effort and depends on the target input sources being installed/enab
 If the user uses a different English or Korean layout, the selection logic may need adjustment.
 
 ### Replacement limitations
-Automatic background correction is not consistently reliable on macOS across all apps. This prototype uses a practical best-effort workflow:
+Automatic background correction is not consistently reliable on macOS across all apps. This prototype uses a layered best-effort workflow:
 
-1. Watch recent typing.
+1. Watch recent typing, invalidating the buffer on cursor-moving input (mouse clicks, scroll, arrow/Home/End/PageUp/PageDown keys, modifier chords, app/window switches).
 2. Infer a likely mismatch.
-3. Delete recently typed characters.
+3. Check `IsSecureEventInputEnabled()`; skip replacement if a password field or terminal with secure input is active.
 4. Switch input source.
-5. Paste the converted replacement.
-6. Restore the previous clipboard contents.
+5. Try Accessibility replacement first: read the focused element's selected text range, extend it backward, and write the replacement directly. No clipboard, no synthetic keystrokes.
+6. If the focused element does not support Accessibility text replacement (e.g. some Electron apps), fall back to an async paste path:
+   - Write replacement to the pasteboard and record its change count.
+   - On a background queue, post delete keystrokes followed by `⌘V`.
+   - After a short delay, restore the previous pasteboard contents *only* if the change count has not advanced (so a concurrent `⌘C` by the user is not clobbered).
 
-Clipboard restoration now preserves full pasteboard items and data types as safely as practical, not just plain text. That said, pasteboard-heavy workflows are inherently best-effort and some edge cases may still exist.
+This works best in normal text fields/editors. It may still fail or behave inconsistently in:
 
-This works best in normal text fields/editors. It may fail or behave inconsistently in:
-
-- secure input fields
-- terminals with custom key handling
 - remote desktop windows
 - games
 - apps that block paste or synthetic events
@@ -108,17 +109,28 @@ This works best in normal text fields/editors. It may fail or behave inconsisten
 
 Even in supported apps, auto-correction is heuristic and not guaranteed. Manual mode remains the safest fallback.
 
-## Default hotkey
+## Hotkeys
 
-`Control` + `Option` + `Command` + `Return`
+- `Control` + `Option` + `Command` + `Return` — apply the current suggestion.
+- `Control` + `Option` + `Command` + `Z` — revert the last auto-correction, restore the previous input source, and add the original token to a persistent blocklist so it is never corrected again.
 
-Use it to replace the latest detected token.
+The blocklist is stored at `~/Library/Application Support/Langsense/blocklist.json` and is consulted before any suggestion.
+
+## Regression matrix
+
+A built-in CLI regression matrix verifies that common English words (e.g. `check`, `world`, `doesn`) are not mis-corrected and common Korean mistypes (e.g. `dkssud`, `tkfkdgo`) do convert cleanly:
+
+```bash
+./.build/debug/Langsense --regression-check
+```
+
+Exits 0 if all cases pass. Extend `Sources/Langsense/RegressionHarness.swift` with more cases as you find them.
 
 ## Project structure
 
 - `Package.swift` - Swift package definition
-- `Sources/WrongLanguageHelper` - app source files
-- `Tests/WrongLanguageHelperTests` - conversion and heuristic tests
+- `Sources/Langsense` - app source files
+- `Tests/LangsenseTests` - conversion and heuristic tests
 
 ## How conversion works
 
@@ -141,7 +153,7 @@ Example:
 Open the package in Xcode on macOS:
 
 1. `open Package.swift` or `xed .`
-2. Run the `WrongLanguageHelper` target.
+2. Run the `Langsense` target.
 3. Grant Accessibility permission when prompted.
 4. Open **System Settings → Privacy & Security → Input Monitoring** and enable the app there if macOS does not prompt automatically.
 5. Ensure both English and Korean input sources are enabled in System Settings.

@@ -180,6 +180,10 @@ enum ConversionEngine {
     private static func englishToKoreanSuggestion(for token: String, profile: SuggestionProfile) -> ConversionSuggestion? {
         guard token.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
 
+        if LanguageValidator.isValidEnglish(token) || LanguageValidator.isEnglishPrefix(token) {
+            return nil
+        }
+
         let converted = englishToKorean(token)
         let hangulSyllableCount = converted.filter { $0.isHangulSyllable }.count
         let composedRatio = converted.isEmpty ? 0 : Double(hangulSyllableCount) / Double(converted.count)
@@ -187,7 +191,7 @@ enum ConversionEngine {
         let vowelRatio = Double(vowelCount) / Double(token.count)
         let upperCaseRatio = Double(token.filter { $0.isUppercase }.count) / Double(token.count)
         let penalty = englishReplacementPenalty(source: token, replacement: converted, vowelRatio: vowelRatio, uppercaseRatio: upperCaseRatio)
-        let confidence = min(
+        let heuristicConfidence = min(
             0.999,
             0.54
                 + (Double(min(token.count, 10)) * 0.035)
@@ -195,6 +199,8 @@ enum ConversionEngine {
                 + ((1.0 - abs(0.42 - vowelRatio)) * 0.09)
                 - penalty
         )
+        let convertedIsKorean = LanguageValidator.isValidKorean(converted)
+        let confidence = convertedIsKorean ? 0.999 : heuristicConfidence
 
         guard hangulSyllableCount >= max(2, token.count / 3),
               composedRatio >= profile.minimumHangulSyllableRatio,
@@ -209,7 +215,9 @@ enum ConversionEngine {
             replacement: converted,
             targetLanguage: .korean,
             deleteCount: token.count,
-            reason: "Latin letters map unusually cleanly to fully composed Hangul keyboard output.",
+            reason: convertedIsKorean
+                ? "Converted output is a recognized Korean word."
+                : "Latin letters map unusually cleanly to fully composed Hangul keyboard output.",
             confidence: confidence
         )
     }
@@ -220,19 +228,25 @@ enum ConversionEngine {
             return nil
         }
 
+        if LanguageValidator.isValidKorean(token) {
+            return nil
+        }
+
         let converted = koreanToEnglish(token)
         let asciiLetters = converted.filter { $0.isASCII && $0.isLetter }.count
         let asciiRatio = converted.isEmpty ? 0 : Double(asciiLetters) / Double(converted.count)
         let lowerCaseRatio = Double(converted.filter { $0.isLowercase }.count) / Double(max(converted.count, 1))
         let penalty = koreanReplacementPenalty(source: token, replacement: converted)
-        let confidence = min(
+        let heuristicConfidence = min(
             0.999,
-            0.58
-                + (Double(min(token.count, 10)) * 0.03)
-                + (asciiRatio * 0.18)
+            0.60
+                + (Double(min(token.count, 10)) * 0.035)
+                + (asciiRatio * 0.22)
                 + (lowerCaseRatio * 0.06)
                 - penalty
         )
+        let convertedIsEnglish = LanguageValidator.isValidEnglish(converted)
+        let confidence = convertedIsEnglish ? 0.999 : heuristicConfidence
 
         guard converted.count >= profile.minimumTokenLength,
               asciiRatio >= profile.minimumASCIIAlphaRatio,
@@ -241,12 +255,20 @@ enum ConversionEngine {
             return nil
         }
 
+        // deleteCount must match the visible on-screen length. The Korean IME composes
+        // raw jamo into syllables, so `token.count` (raw keystrokes) is typically larger
+        // than the number of characters on screen. Using the composed length prevents
+        // us from over-deleting into the user's previous text.
+        let visibleDeleteCount = ConversionEngine.composedVisibleForm(of: token).count
+
         return ConversionSuggestion(
             original: token,
             replacement: converted,
             targetLanguage: .english,
-            deleteCount: token.count,
-            reason: "Hangul input maps back to a clean English keyboard sequence with low ambiguity.",
+            deleteCount: visibleDeleteCount,
+            reason: convertedIsEnglish
+                ? "Converted output is a recognized English word."
+                : "Hangul input maps back to a clean English keyboard sequence with low ambiguity.",
             confidence: confidence
         )
     }
@@ -285,8 +307,8 @@ enum ConversionEngine {
         }
 
         let sourceJamoRatio = Double(source.filter { $0.isHangulCompatibilityJamo }.count) / Double(max(source.count, 1))
-        if sourceJamoRatio > 0.34 {
-            penalty += 0.06
+        if sourceJamoRatio > 0.34 && source.count < 5 {
+            penalty += 0.04
         }
 
         return penalty
@@ -378,7 +400,15 @@ enum ConversionEngine {
     }
 
     private static func isConsonant(_ jamo: String) -> Bool {
-        initialIndex[jamo] != nil || finalIndex[jamo] != nil && jamo != ""
+        (initialIndex[jamo] != nil || finalIndex[jamo] != nil) && !jamo.isEmpty
+    }
+
+    /// Composed on-screen form of a raw-jamo token, matching what the Korean IME
+    /// would render. Used to compute the correct deleteCount for Korean→English
+    /// replacements (visible-char count, not raw-keystroke count).
+    static func composedVisibleForm(of token: String) -> String {
+        let jamo = token.map { String($0) }
+        return composeHangul(from: jamo)
     }
 
     private static func isVowel(_ jamo: String) -> Bool {

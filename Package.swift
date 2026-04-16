@@ -2,24 +2,24 @@
 import PackageDescription
 
 let package = Package(
-    name: "WrongLanguageHelper",
+    name: "Langsense",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "WrongLanguageHelper", targets: ["WrongLanguageHelper"])
+        .executable(name: "Langsense", targets: ["Langsense"])
     ],
     targets: [
         .executableTarget(
-            name: "WrongLanguageHelper",
+            name: "Langsense",
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon")
             ]
         ),
         .testTarget(
-            name: "WrongLanguageHelperTests",
-            dependencies: ["WrongLanguageHelper"]
+            name: "LangsenseTests",
+            dependencies: ["Langsense"]
         )
     ]
 )

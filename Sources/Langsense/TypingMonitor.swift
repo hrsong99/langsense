@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Carbon
 import Foundation
@@ -7,21 +8,39 @@ final class TypingMonitor: ObservableObject {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var workspaceObserver: NSObjectProtocol?
     private let maxTokenLength = 32
     private let boundaryCharacters = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
 
     private var currentToken = ""
     private var ignoredEventsUntil = Date.distantPast
 
+    private static let navigationKeyCodes: Set<Int> = [
+        kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow,
+        kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown, kVK_Escape,
+        kVK_ForwardDelete
+    ]
+
     func start() {
         guard eventTap == nil else { return }
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        let mask = CGEventMask(
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.rightMouseDown.rawValue) |
+            (1 << CGEventType.otherMouseDown.rawValue) |
+            (1 << CGEventType.scrollWheel.rawValue)
+        )
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
-            guard type == .keyDown, let userInfo else {
-                return Unmanaged.passUnretained(event)
-            }
+            guard let userInfo else { return Unmanaged.passUnretained(event) }
             let monitor = Unmanaged<TypingMonitor>.fromOpaque(userInfo).takeUnretainedValue()
-            monitor.handle(event: event)
+            switch type {
+            case .keyDown:
+                monitor.handle(event: event)
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+                monitor.invalidateToken()
+            default:
+                break
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -33,6 +52,7 @@ final class TypingMonitor: ObservableObject {
             callback: callback,
             userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         ) else {
+            NSLog("[Langsense] CGEvent.tapCreate failed — Input Monitoring likely not granted to this binary")
             return
         }
 
@@ -42,6 +62,14 @@ final class TypingMonitor: ObservableObject {
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         CGEvent.tapEnable(tap: tap, enable: true)
+
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.forceInvalidateToken()
+        }
     }
 
     func stop() {
@@ -52,8 +80,12 @@ final class TypingMonitor: ObservableObject {
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
+        if let workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+        }
         eventTap = nil
         runLoopSource = nil
+        workspaceObserver = nil
     }
 
     func consumeLastToken(expected: String) {
@@ -72,9 +104,20 @@ final class TypingMonitor: ObservableObject {
     private func handle(event: CGEvent) {
         guard Date() >= ignoredEventsUntil else { return }
 
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
 
-        switch Int(keyCode) {
+        if Self.navigationKeyCodes.contains(keyCode) {
+            invalidateToken()
+            return
+        }
+
+        let flags = event.flags
+        if flags.contains(.maskCommand) || flags.contains(.maskControl) {
+            invalidateToken()
+            return
+        }
+
+        switch keyCode {
         case kVK_Delete:
             guard !currentToken.isEmpty else { return }
             currentToken.removeLast()
@@ -86,7 +129,15 @@ final class TypingMonitor: ObservableObject {
         case kVK_Tab:
             publishBoundaryAndReset(with: "\t")
         default:
-            guard let scalarString = event.unicodeString, scalarString.count == 1 else { return }
+            guard let scalarString = event.unicodeString else {
+                invalidateToken()
+                return
+            }
+            if scalarString.count != 1 {
+                // Dead-key sequences, emoji, IME commit events — treat as a token break.
+                invalidateToken()
+                return
+            }
             let character = scalarString.first!
             if character.isLetter || character.isHangulCompatibilityJamo || character.isHangulSyllable {
                 currentToken.append(character)
@@ -97,10 +148,27 @@ final class TypingMonitor: ObservableObject {
             } else if scalarString.rangeOfCharacter(from: boundaryCharacters) != nil {
                 publishBoundaryAndReset(with: scalarString)
             } else {
-                currentToken = ""
-                publishSnapshot(justReachedBoundary: false, boundarySuffix: "")
+                invalidateToken()
             }
         }
+    }
+
+    // All state mutation must happen on the main run loop.
+    // The event tap is added via CFRunLoopAddSource(CFRunLoopGetMain()),
+    // and the workspace observer's queue is .main.
+    private func invalidateToken() {
+        guard Date() >= ignoredEventsUntil else { return }
+        guard !currentToken.isEmpty else { return }
+        currentToken = ""
+        publishSnapshot(justReachedBoundary: false, boundarySuffix: "")
+    }
+
+    // Skips the ignoredEventsUntil window — used when we have external evidence
+    // of focus change (e.g. app activation) that should override any in-flight replacement.
+    private func forceInvalidateToken() {
+        guard !currentToken.isEmpty else { return }
+        currentToken = ""
+        publishSnapshot(justReachedBoundary: false, boundarySuffix: "")
     }
 
     private func publishBoundaryAndReset(with suffix: String) {

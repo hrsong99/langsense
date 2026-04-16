@@ -5,7 +5,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("WrongLanguageHelper")
+            Text("Langsense")
                 .font(.headline)
 
             permissionSection

@@ -1,5 +1,5 @@
 import XCTest
-@testable import WrongLanguageHelper
+@testable import Langsense
 
 final class ConversionEngineTests: XCTestCase {
     func testEnglishToKoreanConversion() {
@@ -24,6 +24,18 @@ final class ConversionEngineTests: XCTestCase {
     func testAggressiveModeRequiresVeryStrongSignal() {
         XCTAssertNil(ConversionEngine.suggest(for: "dkss", profile: .aggressive))
         XCTAssertNotNil(ConversionEngine.suggest(for: "dkssudgktpdy", profile: .aggressive))
+    }
+
+    func testManualSuggestionHandlesKoreanJamoMistype() {
+        let suggestion = ConversionEngine.suggest(for: "ㅗ디ㅣㅐ", profile: .manual)
+        XCTAssertEqual(suggestion?.replacement, "hello")
+        XCTAssertEqual(suggestion?.targetLanguage, .english)
+    }
+
+    func testAggressiveModeFiresForLongKoreanJamoMistype() {
+        let suggestion = ConversionEngine.suggest(for: "ㅏ색ㅎㅅㅁ색ㄷ", profile: .aggressive)
+        XCTAssertNotNil(suggestion)
+        XCTAssertEqual(suggestion?.targetLanguage, .english)
     }
 
     func testBoundaryModeRejectsPartiallyComposedHangulOutput() {
