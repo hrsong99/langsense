@@ -19,14 +19,13 @@ final class AppState: ObservableObject {
     private static let correctionModeDefaultsKey = "CorrectionMode"
     private static let correctedTokenCooldown: TimeInterval = 2.0
     private static let correctedTokenCacheLimit = 24
-    private static let revertWindow: TimeInterval = 10.0
+    private static let revertWindow: TimeInterval = 1.5
 
     private let typingMonitor = TypingMonitor()
     private let inputSourceController = InputSourceController()
     private let textReplacer = TextReplacementService()
     private let blocklist = Blocklist()
     private var applyHotKey: HotKeyController?
-    private var revertHotKey: HotKeyController?
     private var cancellables = Set<AnyCancellable>()
     private var pendingBoundarySuffix = ""
     private var correctedTokens: [String: Date] = [:]
@@ -51,13 +50,21 @@ final class AppState: ObservableObject {
 
         refreshPermissions(prompt: true)
         setupBindings()
+        typingMonitor.shouldInterceptDelete = { [weak self] in
+            guard let self else { return false }
+            return self.isRevertPending()
+        }
+        typingMonitor.onInterceptedDelete = { [weak self] in
+            // Hop to main to do the AX work — tap callback runs on main already,
+            // but this keeps the semantics explicit.
+            Task { @MainActor in self?.revertLastCorrection() }
+        }
         typingMonitor.start()
         registerHotKey()
     }
 
     deinit {
         applyHotKey?.unregister()
-        revertHotKey?.unregister()
         typingMonitor.stop()
     }
 
@@ -220,7 +227,7 @@ final class AppState: ObservableObject {
 
         self.pendingBoundarySuffix = ""
         let percent = Int((suggestion.confidence * 100).rounded())
-        self.lastActionMessage = "\(messagePrefix) ‘\(suggestion.original)’ → ‘\(suggestion.replacement)’ (\(percent)% confidence). ⌃⌥⌘Z to undo."
+        self.lastActionMessage = "\(messagePrefix) ‘\(suggestion.original)’ → ‘\(suggestion.replacement)’ (\(percent)% confidence). Press Delete within 1.5s to undo + learn."
         self.recentToken = resultingToken
         self.suggestion = manualSuggestion(for: resultingToken)
         return true
@@ -318,15 +325,10 @@ final class AppState: ObservableObject {
             }
         }
         applyHotKey?.register()
+    }
 
-        revertHotKey = HotKeyController(
-            keyCode: UInt16(kVK_ANSI_Z),
-            modifierFlags: [.control, .option, .command]
-        ) { [weak self] in
-            Task { @MainActor in
-                self?.revertLastCorrection()
-            }
-        }
-        revertHotKey?.register()
+    private func isRevertPending() -> Bool {
+        guard let correction = lastCorrection else { return false }
+        return Date().timeIntervalSince(correction.timestamp) <= Self.revertWindow
     }
 }

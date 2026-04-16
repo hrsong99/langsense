@@ -109,10 +109,10 @@ This works best in normal text fields/editors. It may still fail or behave incon
 
 Even in supported apps, auto-correction is heuristic and not guaranteed. Manual mode remains the safest fallback.
 
-## Hotkeys
+## Hotkeys and revert
 
-- `Control` + `Option` + `Command` + `Return` — apply the current suggestion.
-- `Control` + `Option` + `Command` + `Z` — revert the last auto-correction, restore the previous input source, and add the original token to a persistent blocklist so it is never corrected again.
+- `Control` + `Option` + `Command` + `Return` — apply the current suggestion (Manual mode).
+- **`Delete` within 1.5 seconds of an auto-correction** — revert that correction, restore the previous input source, and add the original token to a persistent blocklist so it is never corrected again. The Delete keystroke is intercepted by the event tap during the revert window, so it does not also shrink the replacement text.
 
 The blocklist is stored at `~/Library/Application Support/Langsense/blocklist.json` and is consulted before any suggestion.
 

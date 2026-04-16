@@ -6,6 +6,12 @@ import Foundation
 final class TypingMonitor: ObservableObject {
     @Published private(set) var snapshot = TypingSnapshot(token: "", justReachedBoundary: false, boundarySuffix: "")
 
+    /// Returns true if the next Delete keypress should be consumed by the app
+    /// (suppressing it from the target text field) and routed to
+    /// `onInterceptedDelete`. Called synchronously from the event tap callback.
+    var shouldInterceptDelete: (() -> Bool)?
+    var onInterceptedDelete: (() -> Void)?
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var workspaceObserver: NSObjectProtocol?
@@ -33,8 +39,23 @@ final class TypingMonitor: ObservableObject {
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let monitor = Unmanaged<TypingMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                // macOS disables taps that take too long; re-enable immediately.
+                if let tap = monitor.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
             switch type {
             case .keyDown:
+                let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+                if keyCode == kVK_Delete,
+                   monitor.shouldInterceptDelete?() == true {
+                    monitor.onInterceptedDelete?()
+                    return nil
+                }
                 monitor.handle(event: event)
             case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
                 monitor.invalidateToken()
@@ -47,7 +68,7 @@ final class TypingMonitor: ObservableObject {
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: mask,
             callback: callback,
             userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
